@@ -65,7 +65,8 @@ template<typename K, typename V>
 class Inner_stack {
 private:
 	std::set<std::shared_ptr<K>, key_comparator> keys;
-	std::map<std::shared_ptr<K>, std::stack<Element<K, V>>, key_comparator> element_map;
+	std::map<std::shared_ptr<K>, 
+			std::stack<Element<K, V>>, key_comparator> element_map;
 	std::set<Element<K, V>, element_height_comparator> element_set;
 
 	bool was_referenced = false;
@@ -77,7 +78,8 @@ public:
 	Inner_stack(Inner_stack const &inner_stack) {
 		clear();
 
-		for (auto it = inner_stack.element_set.rbegin(); it != inner_stack.element_set.rend(); ++it)
+		for (auto it = inner_stack.element_set.rbegin();
+				it != inner_stack.element_set.rend(); ++it)
 			push(it->get_key(), it->get_value());
 
 		was_referenced = false;
@@ -152,7 +154,8 @@ public:
 	std::pair<K const &, V &> front() {
 		Element<K, V> element = *element_set.begin();
 
-		std::pair<K const &, V &> result = {element.get_key(), element.get_value()};
+		std::pair<K const &, V &> result = 
+			{element.get_key(), element.get_value()};
 		was_referenced = true;
 
 		return result;
@@ -161,14 +164,19 @@ public:
 	std::pair<K const &, V const &> front() const {
 		const Element<K, V> element = *element_set.begin();
 
-		std::pair<K const &, V const &> result = {element.get_key(), element.get_value()};
+		std::pair<K const &, V const &> result = 
+			{element.get_key(), element.get_value()};
 
 		return result;
 	}
 
 	V & front(K const &key) {
+		Rollback_helper rollback(*this);
+
 		std::shared_ptr key_pointer = std::make_shared<K>(key);
 		Element<K, V> element = element_map[key_pointer].top();
+
+		rollback.set_commit();
 
 		was_referenced = true;
 
@@ -176,8 +184,12 @@ public:
 	}
 
 	V const & front(K const &key) const {
+		Rollback_helper rollback(*this);
+
 		std::shared_ptr key_pointer = std::make_shared<K>(key);
 		Element<K, V> element = element_map[key].top();
+
+		rollback.set_commit();
 
 		return element.get_value();
 	}
@@ -218,7 +230,8 @@ class Rollback_helper {
 		bool commit = false;
 
 		std::set<std::shared_ptr<K>, key_comparator> old_keys;
-		std::map<std::shared_ptr<K>, std::stack<Element<K, V>>, key_comparator> old_element_map;
+		std::map<std::shared_ptr<K>, 
+				std::stack<Element<K, V>>, key_comparator> old_element_map;
 		std::set<Element<K, V>, element_height_comparator> old_element_set;
 		size_t old_height;
 
@@ -274,8 +287,6 @@ public:
 
 	stack & operator=(stack const &_stack) {
 		stack_pointer = _stack.stack_pointer;
-		if (_stack.stack_pointer->is_referenced())
-			detach();
 		return *this;
 	}
 
@@ -339,6 +350,9 @@ public:
 	}
 
 	std::pair<K const &, V const &> front() const {
+		if (stack_pointer->size() == 0)
+			throw std::invalid_argument("Stack is empty.");
+
 		return stack_pointer->front();
 	}
 
@@ -346,13 +360,24 @@ public:
 		if (stack_pointer->count(key) == 0)
 			throw std::invalid_argument("Key not found in stack.");
 
-		if (not stack_pointer.unique())
-			detach();
+		Detach_rollback_helper detach_helper(stack_pointer);
 
-		return stack_pointer->front(key);
+		if (not stack_pointer.unique())
+			detach_helper.detach();
+		
+		try {
+			V &result = stack_pointer->front(key);
+			detach_helper.set_commit();
+			return result;
+		} catch (...) {
+			throw;
+		}
 	}
 
 	V const & front(K const &key) const {
+		if (stack_pointer->count(key) == 0)
+			throw std::invalid_argument("Key not found in stack.");
+
 		return stack_pointer->front(key);
 	}
 
@@ -384,8 +409,8 @@ public:
 		using iterator_category = std::forward_iterator_tag;
 		using value_type = const K;
 		using difference_type = ptrdiff_t;
-		using pointer = value_type*;
-		using reference = value_type&;
+		using pointer = const value_type*;
+		using reference = const value_type&;
 
 		const_iterator(set_it it)
 			: set_iterator(it) {}
@@ -395,7 +420,7 @@ public:
 		}
 
 		pointer operator->() const {
-			return set_iterator->get;
+			return set_iterator->get();
 		}
 
 		const_iterator& operator++() {
@@ -432,6 +457,7 @@ private:
 		std::shared_ptr<Inner_stack<K, V>>& st_pointer;
 		std::shared_ptr<Inner_stack<K, V>> original_stack;
 		bool commit = false;
+		bool detached = false;
 
 	public:
 		Detach_rollback_helper(std::shared_ptr<Inner_stack<K, V>>& sptr) 
@@ -440,8 +466,7 @@ private:
 		void detach() {
 			original_stack = st_pointer;
 			st_pointer = std::make_shared<Inner_stack<K, V>>(*original_stack);
-	
-			
+			detached = true;
 		}
 
 		void set_commit() {
@@ -449,7 +474,7 @@ private:
 		}
 
 		~Detach_rollback_helper() noexcept {
-			if (!commit) {
+			if (!commit && detached) {
 				st_pointer = original_stack;
 			}
 		}
