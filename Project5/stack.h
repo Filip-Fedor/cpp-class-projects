@@ -429,16 +429,19 @@ public:
 private:
 	class Detach_rollback_helper {
 	private:
-		std::shared_ptr<Inner_stack<K, V>>& stack_pointer;
+		std::shared_ptr<Inner_stack<K, V>>& st_pointer;
 		std::shared_ptr<Inner_stack<K, V>> original_stack;
 		bool commit = false;
 
 	public:
 		Detach_rollback_helper(std::shared_ptr<Inner_stack<K, V>>& sptr) 
-			: stack_pointer(sptr), original_stack(sptr) {}
+			: st_pointer(sptr), original_stack(nullptr) {}
 
 		void detach() {
-			stack_pointer = std::make_shared<Inner_stack<K, V>>(*original_stack);
+			original_stack = st_pointer;
+			st_pointer = std::make_shared<Inner_stack<K, V>>(*original_stack);
+	
+			
 		}
 
 		void set_commit() {
@@ -447,7 +450,7 @@ private:
 
 		~Detach_rollback_helper() noexcept {
 			if (!commit) {
-				stack_pointer = original_stack;
+				st_pointer = original_stack;
 			}
 		}
 	};
