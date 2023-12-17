@@ -6,187 +6,156 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <iostream>
 
+namespace {
 template<typename K, typename V>
-class Storage {
+class Element {
 private:
-	const K key;
-	size_t first_referenced = 0;
-	std::stack<std::pair<V, size_t>> values;
+	std::shared_ptr<K> key_ptr;
+	std::shared_ptr<V> value_ptr;
+	size_t height = 0;
 
 public:
-	Storage(const K &_key) : key(_key) {}
+	Element (std::shared_ptr<K> _key_ptr, std::shared_ptr<V> _value_ptr, size_t _height)
+		:key_ptr(_key_ptr), value_ptr(_value_ptr), height(_height) {}
 
-	Storage(const std::shared_ptr<Storage<K, V>> &pointer) 
-		: key(pointer->key)
-		, first_referenced(0)
-		, values(pointer->values) {}
-
-	void push(const V &value, size_t height) {
-		values.push(std::pair(value, height));
-
-		if (first_referenced > 0)
-			first_referenced++;
-	}
-
-	void pop() {
-		values.pop();
-
-		if (first_referenced > 0)
-			first_referenced--;
-	}
-
-	V & top() {
-		V &top = values.top().first;
-		
-		if (first_referenced == 0)
-			first_referenced = 1;
-
-		return top;
-	}
-
-	V const & top() const {
-		V const &top = values.top().first;
-		return top;
+	std::shared_ptr<K> key_pointer() const {
+		return key_ptr;
 	}
 
 	K const & get_key() const {
-		return key;
+		return *key_ptr;
 	}
 
-	size_t size() const {
-		return values.size();
+	V const & get_value() const {
+		return *value_ptr;
+	}
+	
+	V & get_value() {
+		return *value_ptr;
+	}
+	
+	std::shared_ptr<V> value_pointer() const {
+		return value_ptr;
 	}
 
-	bool empty() const {
-		return size() == 0;
+	size_t get_height() const {
+		return height;
 	}
+};
 
-	bool is_referenced() const {
-		return first_referenced > 0;
+struct key_comparator {
+	template<typename K>
+	bool operator()(const std::shared_ptr<K> &a, const std::shared_ptr<K> &b) const {
+		return *a < *b;
 	}
+};
 
-	size_t height() const {
-		if (empty())
-			return 0;
-		return values.top().second;
+struct element_height_comparator {
+	template<typename K, typename V>
+	bool operator()(const Element<K, V> &a, const Element<K, V> &b) const {
+		return a.get_height() > b.get_height();
 	}
 };
 
 template<typename K, typename V>
 class Inner_stack {
 private:
-	std::map<K, std::shared_ptr<Storage<K, V>>> storage_map;
+	std::set<std::shared_ptr<K>, key_comparator> keys;
+	std::map<std::shared_ptr<K>, std::stack<Element<K, V>>, key_comparator> element_map;
+	std::set<Element<K, V>, element_height_comparator> element_set;
 
-	std::set<std::pair<size_t, std::shared_ptr<Storage<K, V>>>> storage_set;
-
-	size_t referenced_storages = 0;
+	bool was_referenced = false;
 	size_t height = 0;
 
 public:
 	Inner_stack() = default;
 
 	Inner_stack(Inner_stack const &inner_stack) {
-		for (const auto &[key, value]: inner_stack.storage_map) {
-			std::shared_ptr<Storage<K, V>> pointer = 
-				std::make_shared<Storage<K, V>>(value);
-			storage_map[key] = pointer;
-			storage_set.insert(std::pair(pointer->height(), pointer));
-		}
+		clear();
 
-		referenced_storages = 0;
-		height = inner_stack.height;
+		for (auto it = inner_stack.element_set.rbegin(); it != inner_stack.element_set.rend(); ++it)
+			push(it->get_key(), it->get_value());
+
+		was_referenced = false;
 	}
 
 
 	void push(K const &key, V const &value) {
+		std::shared_ptr<K> key_pointer = std::make_shared<K>(key);
+		if (keys.contains(key_pointer))
+			key_pointer = *keys.find(key_pointer);
+		else
+			keys.insert(key_pointer);
+
+		std::shared_ptr<V> value_pointer = std::make_shared<V>(value);
+
+		Element<K, V> element(key_pointer, value_pointer, height);
+
+		if (not element_map.contains(key_pointer))
+			element_map[key_pointer] = std::stack<Element<K, V>>();
+
+		element_map[key_pointer].push(element);
+		element_set.insert(element);
+
 		height++;
-
-		if (not storage_map.contains(key))
-			storage_map[key] = std::make_shared<Storage<K, V>>(key);
-
-		std::shared_ptr<Storage<K, V>> &pointer = storage_map[key];
-		storage_set.erase(std::pair(pointer->height(), pointer));
-
-		pointer->push(value, height);
-		storage_set.insert(std::pair(pointer->height(), pointer));
+		was_referenced = true;
 	}
 
 	void pop() {
+		Element<K, V> element = *element_set.begin();
+		element_set.erase(element);
+		
+		std::shared_ptr<K> key_pointer = element.key_pointer();
+		element_map[key_pointer].pop();
+
 		height--;
-
-		const std::shared_ptr<Storage<K, V>> &pointer = 
-			prev(storage_set.end())->second;
-		bool was_referenced = pointer->is_referenced();
-		storage_set.erase(std::pair(pointer->height(), pointer));
-
-		pointer->pop();
-		bool is_referenced = pointer->is_referenced();
-		storage_set.insert(std::pair(pointer->height(), pointer));
-
-		if (was_referenced and (not is_referenced))
-			referenced_storages--;
+		was_referenced = true;
 	}
 
 	void pop(K const &key) {
+		std::shared_ptr<K> key_pointer = std::make_shared<K>(key);
+		Element<K, V> element = element_map[key_pointer].top();
+
+		element_map[key_pointer].pop();
+		element_set.erase(element);
+
 		height--;
-
-		const std::shared_ptr<Storage<K, V>> &pointer = storage_map[key];
-		bool was_referenced = pointer->is_referenced();
-		storage_set.erase(std::pair(pointer->height(), pointer));
-
-		pointer->pop();
-		bool is_referenced = pointer->is_referenced();
-		storage_set.insert(std::pair(pointer->height(), pointer));
-
-		if (was_referenced and (not is_referenced))
-			referenced_storages--;
+		was_referenced = true;
 	}
 
 	std::pair<K const &, V &> front() {
-		const std::shared_ptr<Storage<K, V>> &pointer = 
-			prev(storage_set.end())->second;
-		bool was_referenced = pointer->is_referenced();
+		Element<K, V> element = *element_set.begin();
 
-		std::pair<K const &, V &> result = 
-			{pointer->get_key(), pointer->top()};
-
-		if (not was_referenced)
-			referenced_storages++;
+		std::pair<K const &, V &> result = {element.get_key(), element.get_value()};
+		was_referenced = true;
 
 		return result;
 	}
 
-	std::pair<K const &, V const &> front() const {
-		const std::shared_ptr<Storage<K, V>> &pointer = 
-			prev(storage_set.end())->second;
-		
-		std::pair<K const &, V const &> result = 
-			{pointer->get_key(), pointer->top()};
+	std::pair<K const &, V const &> front(const char *xd) const {
+		Element<K, V> element = *element_set.begin();
+
+		std::pair<K const &, V const &> result = {element.get_key(), element.get_value()};
 
 		return result;
 	}
 
 	V & front(K const &key) {
-		std::shared_ptr<Storage<K, V>> &pointer = storage_map[key];
-		bool was_referenced = pointer->is_referenced();
+		std::shared_ptr key_pointer = std::make_shared<K>(key);
+		Element<K, V> element = element_map[key_pointer].top();
 
-		V &result = pointer->top();
+		was_referenced = true;
 
-		if (not was_referenced)
-			referenced_storages++;
-
-		return result;
+		return element.get_value();
 	}
 
 	V const & front(K const &key) const {
-		V const &result;
+		std::shared_ptr key_pointer = std::make_shared<K>(key);
+		Element<K, V> element = element_map[key].top();
 
-		std::shared_ptr<Storage<K, V>> &pointer = storage_map[key];
-
-		result = pointer->top();
-
-		return result;
+		return element.get_value();
 	}
 
 	size_t size() const {
@@ -194,25 +163,28 @@ public:
 	}
 
 	size_t count(K const &key) const {
-		auto it = storage_map.find(key);
-		if (it == storage_map.end())
+		std::shared_ptr key_pointer = std::make_shared<K>(key);
+		auto it = element_map.find(key_pointer);
+
+		if (it == element_map.end())
 			return 0;
-		return it->second->size();
+		return (it->second).size();
 	}
 
 	void clear() {
-		storage_map.clear();
-		storage_set.clear();
+		keys.clear();
+		element_map.clear();
+		element_set.clear();
+		was_referenced = false;
 		height = 0;
-		referenced_storages = 0;
 	}
 
 	bool is_referenced() const {
-		return referenced_storages > 0;
+		return was_referenced;
 	}
 
-	const std::map<K, std::shared_ptr<Storage<K, V>>>& get_storage_map() {
-		return storage_map;
+	const std::map<std::shared_ptr<K>, Element<K, V>, key_comparator> & get_element_map() const {
+		return &element_map;
 	}
 };
 
@@ -220,8 +192,7 @@ template<typename K, typename V>
 class const_stack_iterator {
 private:
 	using map_it = 
-		typename std::map<K, std::shared_ptr<Storage<K, V>>>
-		::const_iterator;
+		typename std::map<std::shared_ptr<K>, Element<K, V>, key_comparator>::const_iterator;
 
 	map_it map_iterator;
 
@@ -235,11 +206,11 @@ public:
 		: map_iterator(it) {}
 
 	reference operator*() const {
-		return map_iterator->first;
+		return *(map_iterator->first);
 	}
 
 	pointer operator->() const {
-		return &(map_iterator->first);
+		return &(*(map_iterator->first));
 	}
 
 	const_stack_iterator& operator++() {
@@ -261,6 +232,7 @@ public:
 		return map_iterator != other.map_iterator;
 	}
 };
+}
 
 namespace cxx {
 template<typename K, typename V>
@@ -269,6 +241,7 @@ private:
 	std::shared_ptr<Inner_stack<K, V>> stack_pointer;
 
 	void detach() {
+		std::cerr << "lolololo\n";
 		stack_pointer = std::make_shared<Inner_stack<K, V>>(*stack_pointer);
 	}
 
@@ -333,7 +306,7 @@ public:
 	}
 
 	std::pair<K const &, V const &> front() const {
-		return stack_pointer->front();
+		return static_cast<const std::shared_ptr<Inner_stack<K, V>>>(stack_pointer)->front("FIXME XD");
 	}
 
 	V & front(K const &key) {
@@ -369,11 +342,11 @@ public:
 	using const_iterator = const_stack_iterator<K, V>;
 
 	const_iterator cbegin() const {
-		return const_iterator(stack_pointer->get_storage_map().cbegin());
+		return const_iterator((stack_pointer->get_element_map()).cbegin());
 	}
 
 	const_iterator cend() const {
-		return const_iterator(stack_pointer->get_storage_map().cend());
+		return const_iterator((stack_pointer->get_element_map()).cend());
 	}
 };
 }
